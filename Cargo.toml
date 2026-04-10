@@ -1,0 +1,28 @@
+[package]
+name = "aletheia"
+version = "0.2.0"
+edition = "2021"
+
+[[bin]]
+name = "aletheia"
+path = "src/bin/demo.rs"
+
+[[bin]]
+name = "aletheia-node"
+path = "src/bin/node.rs"
+
+[[bin]]
+name = "aletheia-host"
+path = "src/bin/host.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
+thiserror = "1.0"
+clap = { version = "4.4", features = ["derive"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+
+[dev-dependencies]
+criterion = "0.5"
