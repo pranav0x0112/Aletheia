@@ -1,0 +1,167 @@
+use aletheia::{
+    engine::{MemoryEngine, Operation},
+    protocol::{Command, Response, ResponseStatus, ResponseData, MemOp},
+    network::listen_and_serve,
+};
+use clap::Parser;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+#[derive(Parser)]
+#[command(name = "aletheia-node")]
+#[command(about = "Aletheia memory engine server")]
+struct Args {
+    #[arg(short, long, default_value = "9000")]
+    port: u16,
+
+    #[arg(long, default_value = "256")]
+    dataset_size: usize,
+}
+
+type BufferStore = Arc<Mutex<HashMap<String, (usize, usize)>>>;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let args = Args::parse();
+    let buffers: BufferStore = Arc::new(Mutex::new(HashMap::new()));
+    let mut engine = MemoryEngine::new();
+
+    // Initialize default buffers
+    println!("Initializing memory engine...");
+    let dataset_size = args.dataset_size * 1024 * 1024 / 4; // Convert MB to u32 elements
+    
+    let buf_dataset = engine.allocate_buffer(dataset_size, 0);
+    
+    // Fill with pseudo-random data
+    if let Some(buf) = engine.get_buffer_mut(buf_dataset) {
+        for (i, val) in buf.iter_mut().enumerate() {
+            *val = ((i as u32).wrapping_mul(7919)) % 1000;
+        }
+    }
+
+    let mut buffers_guard = buffers.lock().unwrap();
+    buffers_guard.insert("dataset".to_string(), (buf_dataset, dataset_size));
+    drop(buffers_guard);
+
+    println!("Dataset initialized: {}MB", args.dataset_size);
+
+    // Wrap engine in Arc<Mutex<>> for thread-safe access
+    let engine = Arc::new(Mutex::new(engine));
+    let buffers_clone = buffers.clone();
+    let engine_clone = engine.clone();
+
+    // Start listening
+    let addr = format!("127.0.0.1:{}", args.port);
+    println!("Aletheia Memory Node listening on {}", addr);
+    listen_and_serve(&addr, move |cmd: Command| {
+        handle_command(cmd, &engine_clone, &buffers_clone)
+    })
+    .await?;
+
+    Ok(())
+}
+
+fn handle_command(
+    cmd: Command,
+    engine: &Arc<Mutex<MemoryEngine>>,
+    buffers: &BufferStore,
+) -> Response {
+    let result = match cmd.op {
+        MemOp::MemCopy { buffer } => {
+            let buffers_lock = buffers.lock().unwrap();
+            if let Some(&(idx, size)) = buffers_lock.get(&buffer) {
+                drop(buffers_lock);
+                let engine_lock = engine.lock().unwrap();
+                let result = engine_lock.execute_memory_engine(Operation::MemCopy, &[idx], &[]);
+                Ok(result)
+            } else {
+                Err(format!("Buffer not found: {}", buffer))
+            }
+        }
+        MemOp::MemVecAdd { buffer_a, buffer_b } => {
+            let buffers_lock = buffers.lock().unwrap();
+            let idx_a = buffers_lock.get(&buffer_a).map(|&(idx, _)| idx);
+            let idx_b = buffers_lock.get(&buffer_b).map(|&(idx, _)| idx);
+            drop(buffers_lock);
+
+            match (idx_a, idx_b) {
+                (Some(a), Some(b)) => {
+                    let engine_lock = engine.lock().unwrap();
+                    let result = engine_lock.execute_memory_engine(Operation::MemVecAdd, &[a, b], &[]);
+                    Ok(result)
+                }
+                _ => Err("Buffers not found".to_string()),
+            }
+        }
+        MemOp::MemVecAnd { buffer_a, buffer_b } => {
+            let buffers_lock = buffers.lock().unwrap();
+            let idx_a = buffers_lock.get(&buffer_a).map(|&(idx, _)| idx);
+            let idx_b = buffers_lock.get(&buffer_b).map(|&(idx, _)| idx);
+            drop(buffers_lock);
+
+            match (idx_a, idx_b) {
+                (Some(a), Some(b)) => {
+                    let engine_lock = engine.lock().unwrap();
+                    let result = engine_lock.execute_memory_engine(Operation::MemVecAnd, &[a, b], &[]);
+                    Ok(result)
+                }
+                _ => Err("Buffers not found".to_string()),
+            }
+        }
+        MemOp::MemVecOr { buffer_a, buffer_b } => {
+            let buffers_lock = buffers.lock().unwrap();
+            let idx_a = buffers_lock.get(&buffer_a).map(|&(idx, _)| idx);
+            let idx_b = buffers_lock.get(&buffer_b).map(|&(idx, _)| idx);
+            drop(buffers_lock);
+
+            match (idx_a, idx_b) {
+                (Some(a), Some(b)) => {
+                    let engine_lock = engine.lock().unwrap();
+                    let result = engine_lock.execute_memory_engine(Operation::MemVecOr, &[a, b], &[]);
+                    Ok(result)
+                }
+                _ => Err("Buffers not found".to_string()),
+            }
+        }
+        MemOp::MemScan { buffer, threshold } => {
+            let buffers_lock = buffers.lock().unwrap();
+            if let Some(&(idx, _)) = buffers_lock.get(&buffer) {
+                drop(buffers_lock);
+                let engine_lock = engine.lock().unwrap();
+                let result = engine_lock.execute_memory_engine(Operation::MemScan, &[idx], &[threshold]);
+                Ok(result)
+            } else {
+                Err(format!("Buffer not found: {}", buffer))
+            }
+        }
+        MemOp::MemStrideScan { buffer, stride } => {
+            let buffers_lock = buffers.lock().unwrap();
+            if let Some(&(idx, _)) = buffers_lock.get(&buffer) {
+                drop(buffers_lock);
+                let engine_lock = engine.lock().unwrap();
+                let result = engine_lock.execute_memory_engine(Operation::MemStrideScan, &[idx], &[stride as u32]);
+                Ok(result)
+            } else {
+                Err(format!("Buffer not found: {}", buffer))
+            }
+        }
+    };
+
+    match result {
+        Ok(exec_result) => Response {
+            id: cmd.id,
+            status: ResponseStatus::Ok,
+            data: ResponseData::ok(
+                exec_result.stats.cycles,
+                exec_result.stats.memory_access,
+                exec_result.stats.data_moved,
+                exec_result.data.len(),
+            ),
+        },
+        Err(e) => Response {
+            id: cmd.id,
+            status: ResponseStatus::Error,
+            data: ResponseData::error(e),
+        },
+    }
+}
