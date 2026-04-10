@@ -1,0 +1,680 @@
+use aletheia::{
+    engine::{MemoryEngine, Operation},
+    protocol::{Command, MemOp},
+    network::send_command,
+    results::ExperimentResult,
+};
+use clap::{Parser, Subcommand};
+use std::time::Instant;
+use std::process::{Command as ProcessCommand, Child};
+use uuid::Uuid;
+
+#[derive(Parser)]
+#[command(name = "aletheia-host")]
+#[command(about = "Aletheia distributed memory compute client")]
+struct Args {
+    #[arg(short, long, default_value = "127.0.0.1:9000")]
+    node: String,
+
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Run a memory scan on the remote node
+    Scan {
+        /// Threshold value for filtering
+        #[arg(long, default_value = "500")]
+        threshold: u32,
+
+        /// Buffer name
+        #[arg(long, default_value = "dataset")]
+        buffer: String,
+
+        /// Export results to JSONL file
+        #[arg(short, long)]
+        export: Option<String>,
+    },
+    /// Run vector addition on two buffers
+    VecAdd {
+        /// First buffer name
+        #[arg(long, default_value = "dataset")]
+        buffer_a: String,
+
+        /// Second buffer name
+        #[arg(long, default_value = "dataset")]
+        buffer_b: String,
+
+        /// Export results to JSONL file
+        #[arg(short, long)]
+        export: Option<String>,
+    },
+    /// Run comparative benchmark
+    Benchmark {
+        /// Export results to JSONL file
+        #[arg(short, long)]
+        export: Option<String>,
+    },    /// Run stride scan to measure memory access patterns
+    StrideScan {
+        /// Stride value for memory access pattern
+        #[arg(long, default_value = "1")]
+        stride: usize,
+
+        /// Export results to JSONL file
+        #[arg(short, long)]
+        export: Option<String>,
+    },    /// Run dataset scaling experiments
+    Experiment {
+        #[command(subcommand)]
+        exp_type: ExperimentType,
+    },
+}
+
+#[derive(Subcommand)]
+enum ExperimentType {
+    /// Scale workloads across dataset sizes
+    DatasetScaling {
+        /// Node binary path
+        #[arg(long, default_value = "./target/release/aletheia-node")]
+        node_bin: String,
+    },
+    /// Test memory access stride effects
+    StrideTesting {
+        /// Node binary path
+        #[arg(long, default_value = "./target/release/aletheia-node")]
+        node_bin: String,
+    },
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let args = Args::parse();
+
+    println!("═══════════════════════════════════════════════════════");
+    println!("  Aletheia Distributed Memory Engine - Host Client");
+    println!("═══════════════════════════════════════════════════════\n");
+
+    match args.command {
+        Commands::Scan { threshold, buffer, export } => {
+            run_scan(&args.node, &buffer, threshold, export.as_deref()).await?;
+        }
+        Commands::VecAdd { buffer_a, buffer_b, export } => {
+            run_vec_add(&args.node, &buffer_a, &buffer_b, export.as_deref()).await?;
+        }
+        Commands::Benchmark { export } => {
+            run_benchmark(&args.node, export.as_deref()).await?;
+        }
+        Commands::StrideScan { stride, export } => {
+            run_stride_scan(&args.node, stride, export.as_deref()).await?;
+        }
+        Commands::Experiment { exp_type } => {
+            match exp_type {
+                ExperimentType::DatasetScaling { node_bin } => {
+                    run_dataset_scaling_experiment(&node_bin).await?;
+                }
+                ExperimentType::StrideTesting { node_bin } => {
+                    run_stride_testing_experiment(&node_bin).await?;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_scan(
+    node: &str,
+    buffer: &str,
+    threshold: u32,
+    export_path: Option<&str>,
+) -> anyhow::Result<()> {
+    println!("Dataset Scan Workload");
+    println!("====================\n");
+
+    // CPU mode execution (local)
+    let mut engine = MemoryEngine::new();
+    let buf_size = 256 * 1024 * 1024 / 4; // 256MB
+    let buf = engine.allocate_buffer(buf_size, 0);
+
+    if let Some(buf_data) = engine.get_buffer_mut(buf) {
+        for (i, val) in buf_data.iter_mut().enumerate() {
+            *val = ((i as u32).wrapping_mul(7919)) % 1000;
+        }
+    }
+
+    print!("CPU Mode (local execution): ");
+    let start = Instant::now();
+    let cpu_result = engine.execute_cpu(Operation::MemScan, &[buf], &[threshold]);
+    let cpu_time = start.elapsed();
+    println!("{:.3}s", cpu_time.as_secs_f64());
+    println!("  Results: {} matches", cpu_result.data.len());
+    println!("  Cycles: {}", cpu_result.stats.cycles);
+    println!("  Memory Access: {}MB", cpu_result.stats.memory_access / 1_000_000);
+
+    // Memory engine mode (remote)
+    println!("\nMemory Engine Mode (remote on RPi): ");
+    print!("  Offloading to node... ");
+
+    let start = Instant::now();
+    let cmd = Command {
+        id: Uuid::new_v4().to_string(),
+        op: MemOp::MemScan {
+            buffer: buffer.to_string(),
+            threshold,
+        },
+    };
+
+    let response = send_command(node, cmd).await?;
+    let mem_time = start.elapsed();
+
+    println!("{:.3}s", mem_time.as_secs_f64());
+    println!("  Results: {} matches", response.data.result_count);
+    println!("  Cycles: {}", response.data.cycles);
+    println!("  Memory Access: {}MB", response.data.memory_access / 1_000_000);
+
+    println!("\n--- Comparison ---");
+    let speedup = cpu_time.as_secs_f64() / mem_time.as_secs_f64();
+    println!("Network Latency Speedup: {:.2}x", speedup);
+    println!("Data Movement (local): {}MB", cpu_result.stats.data_moved / 1_000_000);
+    println!("Data Movement (remote): {}MB", response.data.data_moved / 1_000_000);
+
+    // Export results if requested
+    if let Some(path) = export_path {
+        let cpu_exp = ExperimentResult::new(
+            "scan",
+            "cpu",
+            256,
+            cpu_time.as_millis(),
+            cpu_result.stats.cycles,
+            cpu_result.stats.memory_access,
+            cpu_result.stats.data_moved,
+        );
+
+        let mem_exp = ExperimentResult::new(
+            "scan",
+            "memory_engine",
+            256,
+            mem_time.as_millis(),
+            response.data.cycles,
+            response.data.memory_access,
+            response.data.data_moved,
+        );
+
+        ExperimentResult::append_batch_to_file(&[cpu_exp, mem_exp], path)?;
+        println!("\n✓ Results exported to {}", path);
+    }
+
+    Ok(())
+}
+
+async fn run_vec_add(
+    node: &str,
+    buffer_a: &str,
+    buffer_b: &str,
+    export_path: Option<&str>,
+) -> anyhow::Result<()> {
+    println!("Vector Addition Workload");
+    println!("========================\n");
+
+    // CPU mode
+    let mut engine = MemoryEngine::new();
+    let buf_size = 256 * 1024 * 1024 / 4;
+    let buf_a_idx = engine.allocate_buffer(buf_size, 100);
+    let buf_b_idx = engine.allocate_buffer(buf_size, 200);
+
+    print!("CPU Mode (local execution): ");
+    let start = Instant::now();
+    let cpu_result = engine.execute_cpu(Operation::MemVecAdd, &[buf_a_idx, buf_b_idx], &[]);
+    let cpu_time = start.elapsed();
+    println!("{:.3}s", cpu_time.as_secs_f64());
+
+    // Memory engine mode
+    println!("Memory Engine Mode (remote): ");
+    print!("  Offloading to node... ");
+
+    let start = Instant::now();
+    let cmd = Command {
+        id: Uuid::new_v4().to_string(),
+        op: MemOp::MemVecAdd {
+            buffer_a: buffer_a.to_string(),
+            buffer_b: buffer_b.to_string(),
+        },
+    };
+
+    let response = send_command(node, cmd).await?;
+    let mem_time = start.elapsed();
+
+    println!("{:.3}s", mem_time.as_secs_f64());
+
+    println!("\n--- Comparison ---");
+    let speedup = cpu_time.as_secs_f64() / mem_time.as_secs_f64();
+    println!("Speedup: {:.2}x", speedup);
+
+    // Export results if requested
+    if let Some(path) = export_path {
+        let cpu_exp = ExperimentResult::new(
+            "vector_add",
+            "cpu",
+            256,
+            cpu_time.as_millis(),
+            cpu_result.stats.cycles,
+            cpu_result.stats.memory_access,
+            cpu_result.stats.data_moved,
+        );
+
+        let mem_exp = ExperimentResult::new(
+            "vector_add",
+            "memory_engine",
+            256,
+            mem_time.as_millis(),
+            response.data.cycles,
+            response.data.memory_access,
+            response.data.data_moved,
+        );
+
+        ExperimentResult::append_batch_to_file(&[cpu_exp, mem_exp], path)?;
+        println!("\n✓ Results exported to {}", path);
+    }
+
+    Ok(())
+}
+
+async fn run_benchmark(node: &str, export_path: Option<&str>) -> anyhow::Result<()> {
+    println!("Full Benchmark Suite");
+    println!("====================\n");
+
+    let mut results = Vec::new();
+
+    let operations = vec![
+        ("SCAN", MemOp::MemScan {
+            buffer: "dataset".to_string(),
+            threshold: 500,
+        }),
+    ];
+
+    for (name, op) in operations {
+        println!("Running {}...", name);
+        let cmd = Command {
+            id: Uuid::new_v4().to_string(),
+            op,
+        };
+
+        let start = Instant::now();
+        let response = send_command(node, cmd).await?;
+        let elapsed = start.elapsed();
+
+        println!("  Time: {:.3}s", elapsed.as_secs_f64());
+        println!("  Cycles: {}", response.data.cycles);
+        println!("  Status: {:?}\n", response.status);
+
+        let result = ExperimentResult::new(
+            &name.to_lowercase(),
+            "memory_engine",
+            256,
+            elapsed.as_millis(),
+            response.data.cycles,
+            response.data.memory_access,
+            response.data.data_moved,
+        );
+        results.push(result);
+    }
+
+    // Export all benchmark results if requested
+    if let Some(path) = export_path {
+        ExperimentResult::append_batch_to_file(&results, path)?;
+        println!("✓ Benchmark results exported to {}", path);
+    }
+
+    Ok(())
+}
+
+async fn run_dataset_scaling_experiment(node_bin: &str) -> anyhow::Result<()> {
+    println!("Dataset Scaling Experiment");
+    println!("==========================\n");
+
+    let dataset_sizes = vec![64, 128, 256, 512, 1024];
+    let export_file = "results/dataset_scaling.jsonl";
+
+    println!("Testing dataset sizes: {:?}MB\n", dataset_sizes);
+
+    for dataset_mb in dataset_sizes {
+        println!("╔══════════════════════════════════════╗");
+        println!("║  Dataset Size: {}MB", format!("{:>5}", dataset_mb).trim_end());
+        println!("╚══════════════════════════════════════╝");
+
+        // Start node with this dataset size
+        let mut node_process = start_node(node_bin, 9000, dataset_mb)?;
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+        // Run scan workload
+        println!("\n  Running scan...");
+        let scan_results = run_scan_experiment("127.0.0.1:9000", dataset_mb).await?;
+        
+        // Run vec-add workload
+        println!("\n  Running vector-add...");
+        let vecadd_results = run_vecadd_experiment("127.0.0.1:9000", dataset_mb).await?;
+
+        // Collect all results
+        let mut all_results = vec![];
+        all_results.extend(scan_results);
+        all_results.extend(vecadd_results);
+
+        // Export results
+        ExperimentResult::append_batch_to_file(&all_results, export_file)?;
+        println!("\n✓ Results for {}MB exported", dataset_mb);
+
+        // Stop node
+        stop_node(&mut node_process)?;
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    }
+
+    println!("\n✓ All dataset scaling experiments completed!");
+    println!("✓ Results saved to {}", export_file);
+    Ok(())
+}
+
+fn start_node(node_bin: &str, port: u16, dataset_size: usize) -> anyhow::Result<Child> {
+    let child = ProcessCommand::new(node_bin)
+        .arg("--port")
+        .arg(port.to_string())
+        .arg("--dataset-size")
+        .arg(dataset_size.to_string())
+        .spawn()?;
+
+    Ok(child)
+}
+
+fn stop_node(process: &mut Child) -> anyhow::Result<()> {
+    process.kill()?;
+    process.wait()?;
+    Ok(())
+}
+
+async fn run_scan_experiment(
+    node: &str,
+    dataset_mb: usize,
+) -> anyhow::Result<Vec<ExperimentResult>> {
+    let mut results = Vec::new();
+
+    // CPU mode
+    let mut engine = MemoryEngine::new();
+    let buf_size = dataset_mb * 1024 * 1024 / 4;
+    let buf = engine.allocate_buffer(buf_size, 0);
+
+    if let Some(buf_data) = engine.get_buffer_mut(buf) {
+        for (i, val) in buf_data.iter_mut().enumerate() {
+            *val = ((i as u32).wrapping_mul(7919)) % 1000;
+        }
+    }
+
+    let start = Instant::now();
+    let cpu_result = engine.execute_cpu(Operation::MemScan, &[buf], &[500]);
+    let cpu_time = start.elapsed();
+
+    results.push(ExperimentResult::new(
+        "scan",
+        "cpu",
+        dataset_mb as u64,
+        cpu_time.as_millis(),
+        cpu_result.stats.cycles,
+        cpu_result.stats.memory_access,
+        cpu_result.stats.data_moved,
+    ));
+
+    // Memory engine mode
+    let cmd = Command {
+        id: Uuid::new_v4().to_string(),
+        op: MemOp::MemScan {
+            buffer: "dataset".to_string(),
+            threshold: 500,
+        },
+    };
+
+    let start = Instant::now();
+    match send_command(node, cmd).await {
+        Ok(response) => {
+            let mem_time = start.elapsed();
+            results.push(ExperimentResult::new(
+                "scan",
+                "memory_engine",
+                dataset_mb as u64,
+                mem_time.as_millis(),
+                response.data.cycles,
+                response.data.memory_access,
+                response.data.data_moved,
+            ));
+        }
+        Err(_) => {
+            println!("    ⚠ Memory engine mode failed (node might be restarting)");
+        }
+    }
+
+    Ok(results)
+}
+
+async fn run_vecadd_experiment(
+    node: &str,
+    dataset_mb: usize,
+) -> anyhow::Result<Vec<ExperimentResult>> {
+    let mut results = Vec::new();
+
+    // CPU mode
+    let mut engine = MemoryEngine::new();
+    let buf_size = dataset_mb * 1024 * 1024 / 4;
+    let buf_a = engine.allocate_buffer(buf_size, 100);
+    let buf_b = engine.allocate_buffer(buf_size, 200);
+
+    let start = Instant::now();
+    let cpu_result = engine.execute_cpu(Operation::MemVecAdd, &[buf_a, buf_b], &[]);
+    let cpu_time = start.elapsed();
+
+    results.push(ExperimentResult::new(
+        "vector_add",
+        "cpu",
+        dataset_mb as u64,
+        cpu_time.as_millis(),
+        cpu_result.stats.cycles,
+        cpu_result.stats.memory_access,
+        cpu_result.stats.data_moved,
+    ));
+
+    // Memory engine mode
+    let cmd = Command {
+        id: Uuid::new_v4().to_string(),
+        op: MemOp::MemVecAdd {
+            buffer_a: "dataset".to_string(),
+            buffer_b: "dataset".to_string(),
+        },
+    };
+
+    let start = Instant::now();
+    match send_command(node, cmd).await {
+        Ok(response) => {
+            let mem_time = start.elapsed();
+            results.push(ExperimentResult::new(
+                "vector_add",
+                "memory_engine",
+                dataset_mb as u64,
+                mem_time.as_millis(),
+                response.data.cycles,
+                response.data.memory_access,
+                response.data.data_moved,
+            ));
+        }
+        Err(_) => {
+            println!("    ⚠ Memory engine mode failed (node might be restarting)");
+        }
+    }
+
+    Ok(results)
+}
+
+async fn run_stride_scan(
+    node: &str,
+    stride: usize,
+    export_path: Option<&str>,
+) -> anyhow::Result<()> {
+    println!("Stride Scan Workload");
+    println!("===================\n");
+
+    let dataset_size_mb = 256;
+    let mut results = Vec::new();
+
+    // CPU mode
+    let mut engine = MemoryEngine::new();
+    let buf_size = dataset_size_mb * 1024 * 1024 / 4;
+    let buf = engine.allocate_buffer(buf_size, 0);
+
+    if let Some(buf_data) = engine.get_buffer_mut(buf) {
+        for (i, val) in buf_data.iter_mut().enumerate() {
+            *val = ((i as u32).wrapping_mul(7919)) % 1000;
+        }
+    }
+
+    print!("CPU Mode (stride={}): ", stride);
+    let start = Instant::now();
+    let cpu_result = engine.execute_cpu(Operation::MemStrideScan, &[buf], &[stride as u32]);
+    let cpu_time = start.elapsed();
+    println!("{:.3}s", cpu_time.as_secs_f64());
+    println!("  Elements accessed: {}", cpu_result.data.len());
+    println!("  Cycles: {}", cpu_result.stats.cycles);
+
+    results.push(ExperimentResult::with_stride(
+        "stride_scan",
+        "cpu",
+        dataset_size_mb as u64,
+        cpu_time.as_millis(),
+        cpu_result.stats.cycles,
+        cpu_result.stats.memory_access,
+        cpu_result.stats.data_moved,
+        stride,
+    ));
+
+    // Memory engine mode
+    println!("\nMemory Engine Mode (stride={}): ", stride);
+    print!("  Offloading to node... ");
+
+    let start = Instant::now();
+    let cmd = Command {
+        id: Uuid::new_v4().to_string(),
+        op: MemOp::MemStrideScan {
+            buffer: "dataset".to_string(),
+            stride,
+        },
+    };
+
+    let response = send_command(node, cmd).await?;
+    let mem_time = start.elapsed();
+
+    println!("{:.3}s", mem_time.as_secs_f64());
+    println!("  Elements accessed: {}", response.data.result_count);
+    println!("  Cycles: {}", response.data.cycles);
+
+    results.push(ExperimentResult::with_stride(
+        "stride_scan",
+        "memory_engine",
+        dataset_size_mb as u64,
+        mem_time.as_millis(),
+        response.data.cycles,
+        response.data.memory_access,
+        response.data.data_moved,
+        stride,
+    ));
+
+    println!("\n--- Stride Impact ---");
+    let speedup = cpu_time.as_secs_f64() / mem_time.as_secs_f64();
+    println!("Speedup: {:.2}x", speedup);
+    println!("Stride effect: access pattern every {} elements", stride);
+
+    // Export results if requested
+    if let Some(path) = export_path {
+        ExperimentResult::append_batch_to_file(&results, path)?;
+        println!("\n✓ Results exported to {}", path);
+    }
+
+    Ok(())
+}
+
+async fn run_stride_testing_experiment(node_bin: &str) -> anyhow::Result<()> {
+    println!("Stride Testing Experiment");
+    println!("=========================\n");
+
+    let stride_values = vec![1, 4, 16, 64, 256, 4096];
+    let export_file = "results/stride_scan.jsonl";
+
+    println!("Testing strides: {:?}\n", stride_values);
+
+    // Start node once
+    let mut node_process = start_node(node_bin, 9000, 256)?;
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+    for stride in stride_values {
+        println!("Running stride scan with stride={}", stride);
+        
+        // CPU mode
+        let mut engine = MemoryEngine::new();
+        let buf_size = 256 * 1024 * 1024 / 4;
+        let buf = engine.allocate_buffer(buf_size, 0);
+
+        if let Some(buf_data) = engine.get_buffer_mut(buf) {
+            for (i, val) in buf_data.iter_mut().enumerate() {
+                *val = ((i as u32).wrapping_mul(7919)) % 1000;
+            }
+        }
+
+        let start = Instant::now();
+        let cpu_result = engine.execute_cpu(Operation::MemStrideScan, &[buf], &[stride as u32]);
+        let cpu_time = start.elapsed();
+
+        let cpu_exp = ExperimentResult::with_stride(
+            "stride_scan",
+            "cpu",
+            256,
+            cpu_time.as_millis(),
+            cpu_result.stats.cycles,
+            cpu_result.stats.memory_access,
+            cpu_result.stats.data_moved,
+            stride,
+        );
+
+        // Memory engine mode
+        let cmd = Command {
+            id: Uuid::new_v4().to_string(),
+            op: MemOp::MemStrideScan {
+                buffer: "dataset".to_string(),
+                stride,
+            },
+        };
+
+        let start = Instant::now();
+        match send_command("127.0.0.1:9000", cmd).await {
+            Ok(response) => {
+                let mem_time = start.elapsed();
+                let mem_exp = ExperimentResult::with_stride(
+                    "stride_scan",
+                    "memory_engine",
+                    256,
+                    mem_time.as_millis(),
+                    response.data.cycles,
+                    response.data.memory_access,
+                    response.data.data_moved,
+                    stride,
+                );
+
+                ExperimentResult::append_batch_to_file(&[cpu_exp, mem_exp], export_file)?;
+                println!("  ✓ Results for stride={} exported\n", stride);
+            }
+            Err(_) => {
+                println!("  ⚠ Memory engine mode failed\n");
+            }
+        }
+    }
+
+    // Stop node
+    stop_node(&mut node_process)?;
+
+    println!("✓ All stride testing experiments completed!");
+    println!("✓ Results saved to {}", export_file);
+    Ok(())
+}
