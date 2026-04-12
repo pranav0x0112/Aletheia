@@ -181,6 +181,7 @@ async fn run_scan(
 
     // Export results if requested
     if let Some(path) = export_path {
+        let operations = 256 * 1024 * 1024 / 4;
         let cpu_exp = ExperimentResult::new(
             "scan",
             "cpu",
@@ -189,6 +190,7 @@ async fn run_scan(
             cpu_result.stats.cycles,
             cpu_result.stats.memory_access,
             cpu_result.stats.data_moved,
+            operations,
         );
 
         let mem_exp = ExperimentResult::new(
@@ -199,6 +201,7 @@ async fn run_scan(
             response.data.cycles,
             response.data.memory_access,
             response.data.data_moved,
+            operations,
         );
 
         ExperimentResult::append_batch_to_file(&[cpu_exp, mem_exp], path)?;
@@ -253,6 +256,7 @@ async fn run_vec_add(
 
     // Export results if requested
     if let Some(path) = export_path {
+        let operations = 256 * 1024 * 1024 / 4;
         let cpu_exp = ExperimentResult::new(
             "vector_add",
             "cpu",
@@ -261,6 +265,7 @@ async fn run_vec_add(
             cpu_result.stats.cycles,
             cpu_result.stats.memory_access,
             cpu_result.stats.data_moved,
+            operations,
         );
 
         let mem_exp = ExperimentResult::new(
@@ -271,6 +276,7 @@ async fn run_vec_add(
             response.data.cycles,
             response.data.memory_access,
             response.data.data_moved,
+            operations,
         );
 
         ExperimentResult::append_batch_to_file(&[cpu_exp, mem_exp], path)?;
@@ -308,6 +314,7 @@ async fn run_benchmark(node: &str, export_path: Option<&str>) -> anyhow::Result<
         println!("  Cycles: {}", response.data.cycles);
         println!("  Status: {:?}\n", response.status);
 
+        let operations = 256 * 1024 * 1024 / 4;
         let result = ExperimentResult::new(
             &name.to_lowercase(),
             "memory_engine",
@@ -316,6 +323,7 @@ async fn run_benchmark(node: &str, export_path: Option<&str>) -> anyhow::Result<
             response.data.cycles,
             response.data.memory_access,
             response.data.data_moved,
+            operations,
         );
         results.push(result);
     }
@@ -412,6 +420,7 @@ async fn run_scan_experiment(
     let cpu_result = engine.execute_cpu(Operation::MemScan, &[buf], &[500]);
     let cpu_time = start.elapsed();
 
+    let operations = dataset_mb as u64 * 1024 * 1024 / 4;
     results.push(ExperimentResult::new(
         "scan",
         "cpu",
@@ -420,6 +429,7 @@ async fn run_scan_experiment(
         cpu_result.stats.cycles,
         cpu_result.stats.memory_access,
         cpu_result.stats.data_moved,
+        operations,
     ));
 
     // Memory engine mode
@@ -435,6 +445,7 @@ async fn run_scan_experiment(
     match send_command(node, cmd).await {
         Ok(response) => {
             let mem_time = start.elapsed();
+            let operations = dataset_mb as u64 * 1024 * 1024 / 4;
             results.push(ExperimentResult::new(
                 "scan",
                 "memory_engine",
@@ -443,6 +454,7 @@ async fn run_scan_experiment(
                 response.data.cycles,
                 response.data.memory_access,
                 response.data.data_moved,
+                operations,
             ));
         }
         Err(_) => {
@@ -469,6 +481,7 @@ async fn run_vecadd_experiment(
     let cpu_result = engine.execute_cpu(Operation::MemVecAdd, &[buf_a, buf_b], &[]);
     let cpu_time = start.elapsed();
 
+    let operations = dataset_mb as u64 * 1024 * 1024 / 4;
     results.push(ExperimentResult::new(
         "vector_add",
         "cpu",
@@ -477,6 +490,7 @@ async fn run_vecadd_experiment(
         cpu_result.stats.cycles,
         cpu_result.stats.memory_access,
         cpu_result.stats.data_moved,
+        operations,
     ));
 
     // Memory engine mode
@@ -492,6 +506,7 @@ async fn run_vecadd_experiment(
     match send_command(node, cmd).await {
         Ok(response) => {
             let mem_time = start.elapsed();
+            let operations = dataset_mb as u64 * 1024 * 1024 / 4;
             results.push(ExperimentResult::new(
                 "vector_add",
                 "memory_engine",
@@ -500,6 +515,7 @@ async fn run_vecadd_experiment(
                 response.data.cycles,
                 response.data.memory_access,
                 response.data.data_moved,
+                operations,
             ));
         }
         Err(_) => {
@@ -540,6 +556,7 @@ async fn run_stride_scan(
     println!("  Elements accessed: {}", cpu_result.data.len());
     println!("  Cycles: {}", cpu_result.stats.cycles);
 
+    let operations = dataset_size_mb as u64 * 1024 * 1024 / 4;
     results.push(ExperimentResult::with_stride(
         "stride_scan",
         "cpu",
@@ -548,6 +565,7 @@ async fn run_stride_scan(
         cpu_result.stats.cycles,
         cpu_result.stats.memory_access,
         cpu_result.stats.data_moved,
+        operations,
         stride,
     ));
 
@@ -571,6 +589,7 @@ async fn run_stride_scan(
     println!("  Elements accessed: {}", response.data.result_count);
     println!("  Cycles: {}", response.data.cycles);
 
+    let operations = dataset_size_mb as u64 * 1024 * 1024 / 4;
     results.push(ExperimentResult::with_stride(
         "stride_scan",
         "memory_engine",
@@ -579,6 +598,7 @@ async fn run_stride_scan(
         response.data.cycles,
         response.data.memory_access,
         response.data.data_moved,
+        operations,
         stride,
     ));
 
@@ -627,6 +647,7 @@ async fn run_stride_testing_experiment(node_bin: &str) -> anyhow::Result<()> {
         let cpu_result = engine.execute_cpu(Operation::MemStrideScan, &[buf], &[stride as u32]);
         let cpu_time = start.elapsed();
 
+        let operations = 256 * 1024 * 1024 / 4;
         let cpu_exp = ExperimentResult::with_stride(
             "stride_scan",
             "cpu",
@@ -635,6 +656,7 @@ async fn run_stride_testing_experiment(node_bin: &str) -> anyhow::Result<()> {
             cpu_result.stats.cycles,
             cpu_result.stats.memory_access,
             cpu_result.stats.data_moved,
+            operations,
             stride,
         );
 
@@ -651,6 +673,7 @@ async fn run_stride_testing_experiment(node_bin: &str) -> anyhow::Result<()> {
         match send_command("127.0.0.1:9000", cmd).await {
             Ok(response) => {
                 let mem_time = start.elapsed();
+                let operations = 256 * 1024 * 1024 / 4;
                 let mem_exp = ExperimentResult::with_stride(
                     "stride_scan",
                     "memory_engine",
@@ -659,6 +682,7 @@ async fn run_stride_testing_experiment(node_bin: &str) -> anyhow::Result<()> {
                     response.data.cycles,
                     response.data.memory_access,
                     response.data.data_moved,
+                    operations,
                     stride,
                 );
 
