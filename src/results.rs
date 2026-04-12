@@ -13,6 +13,8 @@ pub struct ExperimentResult {
     pub cycles: u64,
     pub memory_access_bytes: u64,
     pub data_moved_bytes: u64,
+    pub operations: u64,
+    pub operational_intensity: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stride: Option<usize>,
 }
@@ -26,7 +28,14 @@ impl ExperimentResult {
         cycles: u64,
         memory_access_bytes: u64,
         data_moved_bytes: u64,
+        operations: u64,
     ) -> Self {
+        let operational_intensity = if data_moved_bytes > 0 {
+            operations as f64 / data_moved_bytes as f64
+        } else {
+            0.0
+        };
+
         ExperimentResult {
             experiment: experiment.to_string(),
             mode: mode.to_string(),
@@ -35,6 +44,8 @@ impl ExperimentResult {
             cycles,
             memory_access_bytes,
             data_moved_bytes,
+            operations,
+            operational_intensity,
             stride: None,
         }
     }
@@ -47,8 +58,15 @@ impl ExperimentResult {
         cycles: u64,
         memory_access_bytes: u64,
         data_moved_bytes: u64,
+        operations: u64,
         stride: usize,
     ) -> Self {
+        let operational_intensity = if data_moved_bytes > 0 {
+            operations as f64 / data_moved_bytes as f64
+        } else {
+            0.0
+        };
+
         ExperimentResult {
             experiment: experiment.to_string(),
             mode: mode.to_string(),
@@ -57,6 +75,8 @@ impl ExperimentResult {
             cycles,
             memory_access_bytes,
             data_moved_bytes,
+            operations,
+            operational_intensity,
             stride: Some(stride),
         }
     }
@@ -98,9 +118,12 @@ mod tests {
 
     #[test]
     fn test_experiment_result_serialization() {
-        let result = ExperimentResult::new("scan", "cpu", 256, 92, 121241, 268000000, 133000000);
+        let operations = 256 * 1024 * 1024 / 4;
+        let result = ExperimentResult::new("scan", "cpu", 256, 92, 121241, 268000000, 133000000, operations);
         let json = result.to_json_line().unwrap();
         assert!(json.contains("\"experiment\":\"scan\""));
         assert!(json.contains("\"mode\":\"cpu\""));
+        assert!(json.contains("\"operations\":"));
+        assert!(json.contains("\"operational_intensity\":"));
     }
 }
