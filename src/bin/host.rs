@@ -64,6 +64,20 @@ enum Commands {
         /// Export results to JSONL file
         #[arg(short, long)]
         export: Option<String>,
+    },
+    /// Run pointer chasing to measure memory latency
+    PointerChase {
+        /// Number of iterations for pointer chasing
+        #[arg(long, default_value = "1000")]
+        iterations: usize,
+
+        /// Buffer name
+        #[arg(long, default_value = "dataset")]
+        buffer: String,
+
+        /// Export results to JSONL file
+        #[arg(short, long)]
+        export: Option<String>,
     },    /// Run dataset scaling experiments
     Experiment {
         #[command(subcommand)]
@@ -107,6 +121,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::StrideScan { stride, export } => {
             run_stride_scan(&args.node, stride, export.as_deref()).await?;
+        }
+        Commands::PointerChase { iterations, buffer, export } => {
+            run_pointer_chase(&args.node, &buffer, iterations, export.as_deref()).await?;
         }
         Commands::Experiment { exp_type } => {
             match exp_type {
@@ -167,10 +184,14 @@ async fn run_scan(
 
     let response = send_command(node, cmd).await?;
     let mem_time = start.elapsed();
+    
+    // Derive cycles from measured elapsed time (4 GHz CPU frequency)
+    let estimated_cpu_freq_hz = 4_000_000_000.0;
+    let mem_cycles = (mem_time.as_secs_f64() * estimated_cpu_freq_hz) as u64;
 
     println!("{:.3}s", mem_time.as_secs_f64());
     println!("  Results: {} matches", response.data.result_count);
-    println!("  Cycles: {}", response.data.cycles);
+    println!("  Cycles: {}", mem_cycles);
     println!("  Memory Access: {}MB", response.data.memory_access / 1_000_000);
 
     println!("\n--- Comparison ---");
@@ -198,7 +219,7 @@ async fn run_scan(
             "memory_engine",
             256,
             mem_time.as_millis(),
-            response.data.cycles,
+            mem_cycles,
             response.data.memory_access,
             response.data.data_moved,
             operations,
@@ -247,6 +268,10 @@ async fn run_vec_add(
 
     let response = send_command(node, cmd).await?;
     let mem_time = start.elapsed();
+    
+    // Derive cycles from measured elapsed time (4 GHz CPU frequency)
+    let estimated_cpu_freq_hz = 4_000_000_000.0;
+    let mem_cycles = (mem_time.as_secs_f64() * estimated_cpu_freq_hz) as u64;
 
     println!("{:.3}s", mem_time.as_secs_f64());
 
@@ -273,7 +298,7 @@ async fn run_vec_add(
             "memory_engine",
             256,
             mem_time.as_millis(),
-            response.data.cycles,
+            mem_cycles,
             response.data.memory_access,
             response.data.data_moved,
             operations,
@@ -310,8 +335,12 @@ async fn run_benchmark(node: &str, export_path: Option<&str>) -> anyhow::Result<
         let response = send_command(node, cmd).await?;
         let elapsed = start.elapsed();
 
+        // Derive cycles from measured elapsed time (4 GHz CPU frequency)
+        let estimated_cpu_freq_hz = 4_000_000_000.0;
+        let cycles = (elapsed.as_secs_f64() * estimated_cpu_freq_hz) as u64;
+
         println!("  Time: {:.3}s", elapsed.as_secs_f64());
-        println!("  Cycles: {}", response.data.cycles);
+        println!("  Cycles: {}", cycles);
         println!("  Status: {:?}\n", response.status);
 
         let operations = 256 * 1024 * 1024 / 4;
@@ -320,7 +349,7 @@ async fn run_benchmark(node: &str, export_path: Option<&str>) -> anyhow::Result<
             "memory_engine",
             256,
             elapsed.as_millis(),
-            response.data.cycles,
+            cycles,
             response.data.memory_access,
             response.data.data_moved,
             operations,
@@ -445,13 +474,16 @@ async fn run_scan_experiment(
     match send_command(node, cmd).await {
         Ok(response) => {
             let mem_time = start.elapsed();
+            // Derive cycles from measured elapsed time (4 GHz CPU frequency)
+            let estimated_cpu_freq_hz = 4_000_000_000.0;
+            let mem_cycles = (mem_time.as_secs_f64() * estimated_cpu_freq_hz) as u64;
             let operations = dataset_mb as u64 * 1024 * 1024 / 4;
             results.push(ExperimentResult::new(
                 "scan",
                 "memory_engine",
                 dataset_mb as u64,
                 mem_time.as_millis(),
-                response.data.cycles,
+                mem_cycles,
                 response.data.memory_access,
                 response.data.data_moved,
                 operations,
@@ -506,13 +538,16 @@ async fn run_vecadd_experiment(
     match send_command(node, cmd).await {
         Ok(response) => {
             let mem_time = start.elapsed();
+            // Derive cycles from measured elapsed time (4 GHz CPU frequency)
+            let estimated_cpu_freq_hz = 4_000_000_000.0;
+            let mem_cycles = (mem_time.as_secs_f64() * estimated_cpu_freq_hz) as u64;
             let operations = dataset_mb as u64 * 1024 * 1024 / 4;
             results.push(ExperimentResult::new(
                 "vector_add",
                 "memory_engine",
                 dataset_mb as u64,
                 mem_time.as_millis(),
-                response.data.cycles,
+                mem_cycles,
                 response.data.memory_access,
                 response.data.data_moved,
                 operations,
@@ -585,9 +620,13 @@ async fn run_stride_scan(
     let response = send_command(node, cmd).await?;
     let mem_time = start.elapsed();
 
+    // Derive cycles from measured elapsed time (4 GHz CPU frequency)
+    let estimated_cpu_freq_hz = 4_000_000_000.0;
+    let mem_cycles = (mem_time.as_secs_f64() * estimated_cpu_freq_hz) as u64;
+
     println!("{:.3}s", mem_time.as_secs_f64());
     println!("  Elements accessed: {}", response.data.result_count);
-    println!("  Cycles: {}", response.data.cycles);
+    println!("  Cycles: {}", mem_cycles);
 
     let operations = dataset_size_mb as u64 * 1024 * 1024 / 4;
     results.push(ExperimentResult::with_stride(
@@ -595,7 +634,7 @@ async fn run_stride_scan(
         "memory_engine",
         dataset_size_mb as u64,
         mem_time.as_millis(),
-        response.data.cycles,
+        mem_cycles,
         response.data.memory_access,
         response.data.data_moved,
         operations,
@@ -610,6 +649,101 @@ async fn run_stride_scan(
     // Export results if requested
     if let Some(path) = export_path {
         ExperimentResult::append_batch_to_file(&results, path)?;
+        println!("\n✓ Results exported to {}", path);
+    }
+
+    Ok(())
+}
+
+async fn run_pointer_chase(
+    node: &str,
+    buffer: &str,
+    iterations: usize,
+    export_path: Option<&str>,
+) -> anyhow::Result<()> {
+    println!("Pointer Chase Workload");
+    println!("======================\n");
+    println!("Measuring memory latency with pointer chasing (no prefetching)\n");
+
+    // CPU mode
+    let mut engine = MemoryEngine::new();
+    let buf_size = 256 * 1024 * 1024 / 4;
+    let buf = engine.allocate_buffer(buf_size, 0);
+
+    // Initialize pointer chain (each element points to next in chain)
+    if let Some(buf_data) = engine.get_buffer_mut(buf) {
+        for i in 0..buf_size {
+            let next = ((i as u32).wrapping_mul(12345).wrapping_add(67890)) % (buf_size as u32);
+            buf_data[i] = next;
+        }
+    }
+
+    print!("CPU Mode (iterations={}): ", iterations);
+    let start = Instant::now();
+    let cpu_result = engine.execute_cpu(Operation::MemPointerChase, &[buf], &[iterations as u32]);
+    let cpu_time = start.elapsed();
+    println!("{:.3}s", cpu_time.as_secs_f64());
+    println!("  Accesses: {}", cpu_result.data.len());
+    println!("  Cycles: {}", cpu_result.stats.cycles);
+
+    // Memory engine mode
+    println!("\nMemory Engine Mode (iterations={}): ", iterations);
+    print!("  Offloading to node... ");
+
+    let start = Instant::now();
+    let cmd = Command {
+        id: Uuid::new_v4().to_string(),
+        op: MemOp::MemPointerChase {
+            buffer: buffer.to_string(),
+            iterations,
+        },
+    };
+
+    let response = send_command(node, cmd).await?;
+    let mem_time = start.elapsed();
+
+    // Derive cycles from measured elapsed time (4 GHz CPU frequency)
+    let estimated_cpu_freq_hz = 4_000_000_000.0;
+    let mem_cycles = (mem_time.as_secs_f64() * estimated_cpu_freq_hz) as u64;
+
+    println!("{:.3}s", mem_time.as_secs_f64());
+    println!("  Accesses: {}", response.data.result_count);
+    println!("  Cycles: {}", mem_cycles);
+
+    println!("\n--- Memory Latency Analysis ---");
+    let speedup = cpu_time.as_secs_f64() / mem_time.as_secs_f64();
+    let latency_reduction = ((cpu_result.stats.cycles as f64 - mem_cycles as f64)
+        / cpu_result.stats.cycles as f64) * 100.0;
+    println!("Speedup: {:.2}x", speedup);
+    println!("Latency Reduction: {:.2}%", latency_reduction);
+    println!("Note: Pointer chasing reveals true memory dependency latency");
+
+    // Export results if requested
+    if let Some(path) = export_path {
+        let operations = iterations as u64;
+        let cpu_exp = ExperimentResult::new(
+            "pointer_chase",
+            "cpu",
+            256,
+            cpu_time.as_millis(),
+            cpu_result.stats.cycles,
+            cpu_result.stats.memory_access,
+            cpu_result.stats.data_moved,
+            operations,
+        );
+
+        let mem_exp = ExperimentResult::new(
+            "pointer_chase",
+            "memory_engine",
+            256,
+            mem_time.as_millis(),
+            mem_cycles,
+            response.data.memory_access,
+            response.data.data_moved,
+            operations,
+        );
+
+        ExperimentResult::append_batch_to_file(&[cpu_exp, mem_exp], path)?;
         println!("\n✓ Results exported to {}", path);
     }
 
@@ -673,13 +807,16 @@ async fn run_stride_testing_experiment(node_bin: &str) -> anyhow::Result<()> {
         match send_command("127.0.0.1:9000", cmd).await {
             Ok(response) => {
                 let mem_time = start.elapsed();
+                // Derive cycles from measured elapsed time (4 GHz CPU frequency)
+                let estimated_cpu_freq_hz = 4_000_000_000.0;
+                let mem_cycles = (mem_time.as_secs_f64() * estimated_cpu_freq_hz) as u64;
                 let operations = 256 * 1024 * 1024 / 4;
                 let mem_exp = ExperimentResult::with_stride(
                     "stride_scan",
                     "memory_engine",
                     256,
                     mem_time.as_millis(),
-                    response.data.cycles,
+                    mem_cycles,
                     response.data.memory_access,
                     response.data.data_moved,
                     operations,
