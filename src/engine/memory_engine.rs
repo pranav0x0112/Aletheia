@@ -120,10 +120,30 @@ impl MemoryEngine {
                     Vec::new()
                 }
             }
+            Operation::MemPointerChase => {
+                if !buffers.is_empty() && params.len() >= 1 {
+                    let buffer = buffers[0];
+                    let iterations = params[0] as usize;
+                    let n = buffer.len();
+                    let mut result = Vec::with_capacity(iterations);
+                    let mut idx = 0usize;
+                    
+                    for _ in 0..iterations {
+                        let val = buffer[idx];
+                        result.push(val);
+                        idx = (val as usize) % n;
+                    }
+                    result
+                } else {
+                    Vec::new()
+                }
+            }
         };
 
         let elapsed = start.elapsed();
-        let cycles = elapsed.as_micros() as u64;
+        // Derive cycles from elapsed time using estimated CPU frequency (~4 GHz)
+        let estimated_cpu_freq_hz = 4_000_000_000.0;
+        let cycles = (elapsed.as_secs_f64() * estimated_cpu_freq_hz) as u64;
         let data_moved = data.len() as u64 * 4;
         let memory_access = buffers.iter().map(|b| b.len() as u64).sum::<u64>() * 4;
 
@@ -219,10 +239,30 @@ impl MemoryEngine {
                     Vec::new()
                 }
             }
+            Operation::MemPointerChase => {
+                if !buffers.is_empty() && params.len() >= 1 {
+                    let buffer = buffers[0];
+                    let iterations = params[0] as usize;
+                    let n = buffer.len();
+                    let mut result = Vec::with_capacity(iterations);
+                    let mut idx = 0usize;
+                    
+                    for _ in 0..iterations {
+                        let val = buffer[idx];
+                        result.push(val);
+                        idx = (val as usize) % n;
+                    }
+                    result
+                } else {
+                    Vec::new()
+                }
+            }
         };
 
         let elapsed = start.elapsed();
-        let cycles = elapsed.as_micros() as u64;
+        // Derive cycles from elapsed time using estimated CPU frequency (~4 GHz)
+        let estimated_cpu_freq_hz = 4_000_000_000.0;
+        let cycles = (elapsed.as_secs_f64() * estimated_cpu_freq_hz) as u64;
         
         // Memory engine reduces data movement: only results flow back to CPU
         let data_moved = data.len() as u64 * 4;
