@@ -1,5 +1,5 @@
 use crate::protocol::{Command, Response};
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use serde_json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};

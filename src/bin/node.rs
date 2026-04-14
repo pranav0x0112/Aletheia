@@ -6,6 +6,7 @@ use aletheia::{
 use clap::Parser;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 #[derive(Parser)]
 #[command(name = "aletheia-node")]
@@ -66,10 +67,12 @@ fn handle_command(
     engine: &Arc<Mutex<MemoryEngine>>,
     buffers: &BufferStore,
 ) -> Response {
+    let start = Instant::now();
+    
     let result = match cmd.op {
         MemOp::MemCopy { buffer } => {
             let buffers_lock = buffers.lock().unwrap();
-            if let Some(&(idx, size)) = buffers_lock.get(&buffer) {
+            if let Some(&(idx, _size)) = buffers_lock.get(&buffer) {
                 drop(buffers_lock);
                 let engine_lock = engine.lock().unwrap();
                 let result = engine_lock.execute_memory_engine(Operation::MemCopy, &[idx], &[]);
@@ -145,18 +148,36 @@ fn handle_command(
                 Err(format!("Buffer not found: {}", buffer))
             }
         }
+        MemOp::MemPointerChase { buffer, iterations } => {
+            let buffers_lock = buffers.lock().unwrap();
+            if let Some(&(idx, _)) = buffers_lock.get(&buffer) {
+                drop(buffers_lock);
+                let engine_lock = engine.lock().unwrap();
+                let result = engine_lock.execute_memory_engine(Operation::MemPointerChase, &[idx], &[iterations as u32]);
+                Ok(result)
+            } else {
+                Err(format!("Buffer not found: {}", buffer))
+            }
+        }
     };
 
     match result {
-        Ok(exec_result) => Response {
-            id: cmd.id,
-            status: ResponseStatus::Ok,
-            data: ResponseData::ok(
-                exec_result.stats.cycles,
-                exec_result.stats.memory_access,
-                exec_result.stats.data_moved,
-                exec_result.data.len(),
-            ),
+        Ok(exec_result) => {
+            let elapsed = start.elapsed();
+            // Derive cycles from actual elapsed time using estimated CPU frequency (~4 GHz)
+            let estimated_cpu_freq_hz = 4_000_000_000.0;
+            let cycles = (elapsed.as_secs_f64() * estimated_cpu_freq_hz) as u64;
+            
+            Response {
+                id: cmd.id,
+                status: ResponseStatus::Ok,
+                data: ResponseData::ok(
+                    cycles,
+                    exec_result.stats.memory_access,
+                    exec_result.stats.data_moved,
+                    exec_result.data.len(),
+                ),
+            }
         },
         Err(e) => Response {
             id: cmd.id,

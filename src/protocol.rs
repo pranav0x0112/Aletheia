@@ -38,6 +38,11 @@ pub enum MemOp {
         buffer: String,
         stride: usize,
     },
+    #[serde(rename = "MEM_POINTER_CHASE")]
+    MemPointerChase {
+        buffer: String,
+        iterations: usize,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

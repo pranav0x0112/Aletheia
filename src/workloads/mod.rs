@@ -1,5 +1,7 @@
 pub mod dataset_scan;
 pub mod vector_add;
+pub mod pointer_chase;
 
 pub use dataset_scan::{DatasetScan, ScanComparison};
 pub use vector_add::{VectorAdd, VectorAddComparison};
+pub use pointer_chase::{PointerChase, PointerChaseComparison};
